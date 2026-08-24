@@ -1,0 +1,11 @@
+{
+  // Typecheck-only view of the project. The build config must keep emitting
+  // just `src` to `lib`, so the tests are checked from a separate config
+  // rather than by widening `include` there.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "."
+  },
+  "include": ["src", "tests"]
+}

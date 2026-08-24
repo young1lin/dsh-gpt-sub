@@ -1,0 +1,16 @@
+node_modules/
+lib/
+*.log
+
+# env & secrets
+.env
+.env.*
+
+# build & test artifacts
+coverage/
+*.tsbuildinfo
+
+# editors & OS
+.DS_Store
+.idea/
+.vscode/

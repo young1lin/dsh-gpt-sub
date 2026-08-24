@@ -1,0 +1,16 @@
+# dsh-gpt-sub bundle patch: one insert over the profile root. Later user patch
+# layers address this row by id and replace its whole config.
+- insert:
+    - id: gpt-sub
+      name: 'dsh-gpt-sub'
+      config:
+        # Proxy for reaching the OAuth token endpoint. Empty means direct.
+        proxyUrl: 'http://127.0.0.1:7890'
+        # Codex CLI credential file, shared with the codex command.
+        authFile: '~/.codex/auth.json'
+        # Refresh the access token when less than this many minutes remain.
+        refreshMarginMinutes: 30
+        # Credential the openai-codex provider route reads in settings.yaml.
+        tokenRef: 'CODEX_NATIVE_TOKEN'
+        # How often to re-read auth.json and republish the token.
+        syncIntervalMinutes: 10
