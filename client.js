@@ -2,7 +2,7 @@
  * dsh-gpt-sub — client bundle (browser half). Registers a Codex subscription
  * quota panel as a Settings section. The panel is a renderer only: it polls the
  * host half's GET /gpt-sub/quota and /gpt-sub/status endpoints, and every
- * semantic (which window counts, the upstream throttle, proxy validation, what
+ * semantic (which windows count, the upstream throttle, proxy validation, what
  * a stale reading means) lives host-side.
  *
  * Controls use the app's dsh-client-ui-primitives (Button, Input, Pill) so the
@@ -36,6 +36,8 @@ window.__ModuleLoader__.load({
     const PROXY_TEST_ENDPOINT = '/gpt-sub/proxy/test'
     const AUTH_ENDPOINT = '/gpt-sub/auth'
     const AUTH_BROWSE_ENDPOINT = '/gpt-sub/auth/browse'
+    const RESET_CREDITS_ENDPOINT = '/gpt-sub/reset-credits'
+    const RESET_CREDITS_CONSUME_ENDPOINT = '/gpt-sub/reset-credits/consume'
     const POLL_MS = 60_000
 
     const css = [
@@ -45,6 +47,11 @@ window.__ModuleLoader__.load({
       '.dshGptSubTrack{position:relative;height:8px;border-radius:4px;background:var(--dsw-alias-interactive-bg-hover);overflow:hidden}',
       '.dshGptSubFill{position:absolute;left:0;top:0;bottom:0;border-radius:4px;transition:width .3s}',
       '.dshGptSubMeta{display:flex;justify-content:space-between;margin-top:6px;font-size:12px}',
+      // One block per rate-limit window (5-hour rolling, weekly), each with
+      // its own label, track, and reset countdown.
+      '.dshGptSubWin{margin-top:10px}',
+      '.dshGptSubWin+.dshGptSubWin{margin-top:16px}',
+      '.dshGptSubWinLabel{font-size:12px;color:var(--dsw-alias-label-tertiary);margin-bottom:4px}',
       '.dshGptSubNote{margin-top:8px;font-size:12px;color:var(--dsw-alias-label-tertiary)}',
       '.dshGptSubBtn{margin-left:auto}',
       '.dshGptSubDiag{margin-top:16px;padding-top:12px;border-top:1px solid var(--dsw-alias-interactive-bg-hover);display:grid;grid-template-columns:max-content 1fr;gap:8px 16px;align-items:center}',
@@ -106,45 +113,72 @@ window.__ModuleLoader__.load({
         : React.createElement('span', { className: 'dshGptSubFallbackPill' }, props.children)
 
     /**
-     * Bar colour by consumption, matching the five tiers the sibling quota
-     * panel uses so the two read the same way.
-     * @param percent - percent consumed.
+     * Bar colour by remaining share, mirroring the five tiers the sibling
+     * quota panel uses so the two read the same way. The bar drains as the
+     * window is consumed, so the colour follows what is left: green while
+     * plenty remains, red as it runs out.
+     * @param percent - percent remaining.
      * @returns a CSS colour.
      */
     const tierColor = (percent) => {
-      if (percent < 20) return '#22c55e'
-      if (percent < 40) return '#16a34a'
-      if (percent < 60) return '#06b6d4'
-      if (percent < 80) return '#eab308'
+      if (percent >= 80) return '#22c55e'
+      if (percent >= 60) return '#16a34a'
+      if (percent >= 40) return '#06b6d4'
+      if (percent >= 20) return '#eab308'
       return '#ef4444'
     }
 
     /**
-     * Render an epoch-ms timestamp as a coarse countdown.
+     * Render a remaining duration in compact units, keeping two adjacent
+     * components and dropping a trailing zero: days+hours past a day,
+     * hours+minutes past an hour, minutes+seconds under one -- '4h22m',
+     * '10m22s', '2d5h', '45s', never '4h0m'. Seconds only appear under an
+     * hour, where they still change fast enough to read.
+     * @param seconds - whole remaining seconds; negative clamps to zero.
+     * @returns the compact duration.
+     */
+    const compactDuration = (seconds) => {
+      const safe = Math.max(0, seconds)
+      const days = Math.floor(safe / 86400)
+      const hours = Math.floor((safe % 86400) / 3600)
+      const minutes = Math.floor((safe % 3600) / 60)
+      const rest = safe % 60
+      if (days > 0) return days + 'd' + (hours > 0 ? hours + 'h' : '')
+      if (hours > 0) return hours + 'h' + (minutes > 0 ? minutes + 'm' : '')
+      if (minutes > 0) return minutes + 'm' + (rest > 0 ? rest + 's' : '')
+      return rest + 's'
+    }
+
+    /**
+     * Render an epoch-ms timestamp as an exact countdown.
      * @param at - epoch milliseconds.
      * @param now - epoch milliseconds.
-     * @returns a short human string, or an empty string when unknown.
+     * @returns '4h22m后'-style, '即将' when due, or '' when unknown.
      */
     const countdownFrom = (at, now) => {
       if (!at) return ''
       const seconds = Math.max(0, Math.round((at - now) / 1000))
-      if (seconds === 0) return '即将发生'
-      const hours = Math.floor(seconds / 3600)
-      if (hours >= 24) return Math.floor(hours / 24) + ' 天后'
-      if (hours >= 1) return hours + ' 小时后'
-      return Math.max(1, Math.floor(seconds / 60)) + ' 分钟后'
+      if (seconds === 0) return '即将'
+      return compactDuration(seconds) + '后'
     }
 
     /**
-     * Render a reset time as a coarse countdown.
+     * Name what a countdown counts down to: '4h22m后' + '重置' reads
+     * '4h22m后重置', and '即将' becomes '即将重置'.
+     * @param base - a countdownFrom result.
+     * @param noun - what happens when the countdown ends.
+     * @returns the named string, or '' untouched.
+     */
+    const withNoun = (base, noun) =>
+      base === '' ? '' : base === '即将' ? '即将' + noun : base.replace(/后$/, '后' + noun)
+
+    /**
+     * Render a reset time as an exact countdown.
      * @param resetAt - epoch seconds.
      * @param now - epoch milliseconds.
-     * @returns a short human string, or an empty string when unknown.
+     * @returns '4h22m后重置', or an empty string when unknown.
      */
-    const countdown = (resetAt, now) => {
-      if (!resetAt) return ''
-      return countdownFrom(resetAt * 1000, now).replace(/后$/, '后重置')
-    }
+    const countdown = (resetAt, now) => withNoun(countdownFrom(resetAt * 1000, now), '重置')
 
     // The latest quota reading, plus the subscribers waiting on it.
     let state = { phase: 'loading' }
@@ -258,6 +292,26 @@ window.__ModuleLoader__.load({
       upLabel: '..',
       truncatedNote: '条目过多，仅显示部分',
       browseFail: '无法读取目录',
+      noFiveHour: '当前账号无 5 小时限额，仅按周限额计',
+      noWindows: '上游未报告任何限额窗口',
+      resetsLeft: (count) => '还有 ' + count + ' 次重置',
+      resetCredits: '重置次数',
+      rcLoad: '查询重置次数',
+      rcLoading: '查询中…',
+      rcAvailable: (n) => '可用 ' + n + ' 次',
+      rcEmpty: '当前没有可用的重置次数',
+      rcUse: '使用并重置',
+      rcUsing: '使用中…',
+      rcConfirm: (title) => '确定使用这个重置次数吗？将立即重置配额窗口：' + (title || '未命名'),
+      rcConsumeFail: '使用失败',
+      rcOutcomes: {
+        reset: (n) => '✓ 已重置（' + n + ' 个窗口）',
+        nothing_to_reset: '✗ 当前没有可重置的窗口',
+        no_credit: '✗ 没有可用的重置次数',
+        already_redeemed: '✗ 该次数已被使用过',
+      },
+      rcStatus: { available: '可用', redeeming: '兑换中', redeemed: '已使用', unknown: '未知' },
+      rcExpires: (text) => '（' + text + ' 前有效）',
     }
 
     /**
@@ -545,6 +599,129 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * The rate-limit reset credits block: lists the account's redeemable
+     * credits on demand, and consumes one after an explicit confirmation.
+     * Consuming is destructive, so nothing here fires without a click.
+     * @returns the rendered block.
+     */
+    const ResetCreditsControl = () => {
+      const [details, setDetails] = useState(undefined)
+      const [busy, setBusy] = useState(false)
+      const [consumingId, setConsumingId] = useState('')
+      const [note, setNote] = useState('')
+
+      /**
+       * Fetch the credit list from the host.
+       * @returns nothing; failures surface as the note.
+       */
+      const load = async () => {
+        setBusy(true)
+        setNote('')
+        try {
+          const response = await fetch(RESET_CREDITS_ENDPOINT, { cache: 'no-store' })
+          const payload = await response.json().catch(() => ({}))
+          if (!response.ok || !payload.ok) throw new Error(payload.message || 'endpoint answered ' + response.status)
+          setDetails(payload)
+        } catch (error) {
+          setNote('✗ ' + (error instanceof Error ? error.message : String(error)))
+        } finally {
+          setBusy(false)
+        }
+      }
+
+      // Load once on mount; later reads happen through the visible button.
+      useEffect(() => {
+        void load()
+      }, [])
+
+      /**
+       * Consume one credit after a confirmation dialog, then refresh both the
+       * credit list and the quota reading.
+       * @param credit - the credit to consume; null means "any available".
+       * @returns nothing.
+       */
+      const consume = async (credit) => {
+        const title = credit ? credit.title || credit.id : ''
+        if (!window.confirm(STR.rcConfirm(title))) return
+        setConsumingId(credit ? credit.id : '*')
+        setNote('')
+        try {
+          const payload = await postJson(RESET_CREDITS_CONSUME_ENDPOINT, {
+            ...(credit ? { creditId: credit.id } : {}),
+          })
+          const outcome = STR.rcOutcomes[payload.code]
+          setNote(outcome ? outcome(payload.windows_reset || 0) : payload.code)
+          await Promise.all([load(), poll(false)])
+        } catch (error) {
+          setNote('✗ ' + STR.rcConsumeFail + '：' + (error instanceof Error ? error.message : String(error)))
+        } finally {
+          setConsumingId('')
+        }
+      }
+
+      if (details === undefined) {
+        return React.createElement(
+          'div',
+          { className: 'dshGptSubProxyMeta' },
+          React.createElement(
+            SmallButton,
+            { variant: 'outline', disabled: busy, onClick: () => void load() },
+            busy ? STR.rcLoading : STR.rcLoad,
+          ),
+          note ? React.createElement('span', null, note) : null,
+        )
+      }
+
+      const available = details.credits.filter((credit) => credit.status === 'available')
+      return React.createElement(
+        'div',
+        null,
+        React.createElement(
+          'div',
+          { className: 'dshGptSubProxyMeta' },
+          React.createElement(Badge, null, STR.rcAvailable(details.available_count)),
+          React.createElement(
+            SmallButton,
+            { variant: 'ghost', disabled: busy, onClick: () => void load() },
+            busy ? STR.rcLoading : '刷新',
+          ),
+        ),
+        available.length === 0
+          ? React.createElement('div', { className: 'dshGptSubNote' }, STR.rcEmpty)
+          : React.createElement(
+              'div',
+              null,
+              available.map((credit) =>
+                React.createElement(
+                  'div',
+                  { key: credit.id, className: 'dshGptSubProxyMeta' },
+                  React.createElement(
+                    'span',
+                    null,
+                    (credit.title || credit.id) +
+                      ' · ' +
+                      (STR.rcStatus[credit.status] || credit.status) +
+                      (credit.expires_at
+                        ? STR.rcExpires(new Date(credit.expires_at).toLocaleString())
+                        : ''),
+                  ),
+                  React.createElement(
+                    SmallButton,
+                    {
+                      variant: 'outline',
+                      disabled: busy || consumingId !== '',
+                      onClick: () => void consume(credit),
+                    },
+                    consumingId === credit.id ? STR.rcUsing : STR.rcUse,
+                  ),
+                ),
+              ),
+            ),
+        note ? React.createElement('div', { className: 'dshGptSubNote' }, note) : null,
+      )
+    }
+
+    /**
      * The Settings section body.
      * @returns the rendered panel.
      */
@@ -581,9 +758,44 @@ window.__ModuleLoader__.load({
         )
       }
 
-      const percent = typeof reading.usedPercent === 'number' ? reading.usedPercent : 0
-      const hours = reading.windowHours
-      const windowLabel = hours ? (hours >= 24 ? Math.round(hours / 24) + ' 天窗口' : hours + ' 小时窗口') : ''
+      /**
+       * Label a window by its length: '5 小时窗口', '7 天窗口'.
+       * @param hours - the window's length in hours.
+       * @returns the label.
+       */
+      const windowLabel = (hours) => (hours >= 24 ? Math.round(hours / 24) + ' 天窗口' : hours + ' 小时窗口')
+
+      /**
+       * One window's block: label, a track of the percent REMAINING, and the
+       * reset countdown. Codex-style -- the bar starts full at 100% and drains
+       * toward 0% as the allowance is spent, so its length is what is left.
+       * @param label - the window label.
+       * @param window - the window reading from the host.
+       * @returns the rendered block.
+       */
+      const WindowBlock = (label, window) => {
+        const used = typeof window.usedPercent === 'number' ? window.usedPercent : 0
+        const remaining = Math.min(100, Math.max(0, 100 - used))
+        return React.createElement(
+          'div',
+          { className: 'dshGptSubWin' },
+          React.createElement('div', { className: 'dshGptSubWinLabel' }, label),
+          React.createElement(
+            'div',
+            { className: 'dshGptSubTrack' },
+            React.createElement('div', {
+              className: 'dshGptSubFill',
+              style: { width: remaining + '%', background: tierColor(remaining) },
+            }),
+          ),
+          React.createElement(
+            'div',
+            { className: 'dshGptSubMeta' },
+            React.createElement('span', null, '剩余 ' + remaining + '%'),
+            React.createElement('span', null, countdown(window.resetAt, now)),
+          ),
+        )
+      }
 
       const refreshLabel = stat
         ? stat.refreshAt
@@ -591,7 +803,7 @@ window.__ModuleLoader__.load({
           : STR.unknown
         : ''
       const authLabel = stat ? stat.authFile || '' : ''
-      const tokenExpiryLabel = stat && stat.tokenExpiresAt ? countdownFrom(stat.tokenExpiresAt, now).replace(/后$/, '后过期') : ''
+      const tokenExpiryLabel = stat && stat.tokenExpiresAt ? withNoun(countdownFrom(stat.tokenExpiresAt, now), '过期') : ''
 
       return React.createElement(
         'div',
@@ -600,27 +812,29 @@ window.__ModuleLoader__.load({
           'div',
           { className: 'dshGptSubHead' },
           React.createElement('span', { className: 'dshGptSubPlan' }, 'ChatGPT ' + (reading.plan || '')),
-          React.createElement('span', null, windowLabel),
+          // The on-demand usage resets the account can still spend to clear
+          // a capped window without waiting out its timer.
+          reading.resetsRemaining !== undefined
+            ? React.createElement(Badge, null, STR.resetsLeft(reading.resetsRemaining))
+            : null,
           React.createElement(
             'span',
             { className: 'dshGptSubBtn' },
             React.createElement(SmallButton, { variant: 'ghost', onClick: () => poll(true) }, '刷新'),
           ),
         ),
-        React.createElement(
-          'div',
-          { className: 'dshGptSubTrack' },
-          React.createElement('div', {
-            className: 'dshGptSubFill',
-            style: { width: Math.min(100, Math.max(0, percent)) + '%', background: tierColor(percent) },
-          }),
-        ),
-        React.createElement(
-          'div',
-          { className: 'dshGptSubMeta' },
-          React.createElement('span', null, '已用 ' + percent + '%'),
-          React.createElement('span', null, countdown(reading.resetAt, now)),
-        ),
+        // The 5-hour rolling window first -- it is the one that bites first --
+        // then the weekly one. An account without a 5-hour limit (pro
+        // currently) gets a note where its bar would be, not an empty bar.
+        reading.fiveHour !== undefined
+          ? WindowBlock(windowLabel(reading.fiveHour.windowHours), reading.fiveHour)
+          : reading.weekly !== undefined
+            ? React.createElement('div', { className: 'dshGptSubNote' }, STR.noFiveHour)
+            : null,
+        reading.weekly !== undefined ? WindowBlock(windowLabel(reading.weekly.windowHours), reading.weekly) : null,
+        reading.fiveHour === undefined && reading.weekly === undefined
+          ? React.createElement('div', { className: 'dshGptSubNote' }, STR.noWindows)
+          : null,
         reading.stale
           ? React.createElement('div', { className: 'dshGptSubNote' }, '数据可能已过期：' + (reading.message || ''))
           : null,
@@ -643,6 +857,8 @@ window.__ModuleLoader__.load({
           React.createElement('span', { className: 'dshGptSubDiagValue' }, refreshLabel),
           React.createElement('span', { className: 'dshGptSubDiagLabel' }, STR.proxy),
           React.createElement('span', { className: 'dshGptSubDiagValue' }, React.createElement(ProxyControl, null)),
+          React.createElement('span', { className: 'dshGptSubDiagLabel' }, STR.resetCredits),
+          React.createElement('span', { className: 'dshGptSubDiagValue' }, React.createElement(ResetCreditsControl, null)),
         ),
       )
     }

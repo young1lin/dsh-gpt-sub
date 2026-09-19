@@ -2,14 +2,24 @@
  * The host half of the quota panel: one cached JSON endpoint the browser polls.
  *
  * Every quota semantic lives here rather than in the client bundle -- which
- * window counts, how often upstream may be asked, what a failure looks like --
+ * windows count, how often upstream may be asked, what a failure looks like --
  * so the browser half stays a renderer.
  *
  * @module dsh-gpt-sub/quota-route
  */
 
 import type { Dispatcher } from 'undici'
-import { activeWindow, fetchUsage } from './usage.ts'
+import { fetchUsage, reportWindows, reportedWindows, resetsRemaining, type ReportedWindow, type UsageWindow } from './usage.ts'
+
+/** One rate-limit window as the endpoint serves it to the panel. */
+export interface QuotaWindowState {
+  /** Percent of the window consumed. */
+  usedPercent: number
+  /** Length of the window, in hours. */
+  windowHours: number
+  /** Epoch seconds at which the window resets. */
+  resetAt?: number
+}
 
 /** What the endpoint serves. */
 export interface QuotaState {
@@ -17,12 +27,22 @@ export interface QuotaState {
   phase: 'ready' | 'error'
   /** Subscription plan, when upstream reported one. */
   plan?: string
-  /** Percent of the active window consumed. */
-  usedPercent?: number
-  /** Length of the active window, in hours. */
-  windowHours?: number
-  /** Epoch seconds at which the window resets. */
-  resetAt?: number
+  /**
+   * The short rolling window -- 5 hours on every plan that reports one. A
+   * plan without it (pro currently) simply omits the field, and the panel
+   * says so instead of drawing an empty bar.
+   */
+  fiveHour?: QuotaWindowState
+  /** The weekly window, alone or beside the 5-hour one. */
+  weekly?: QuotaWindowState
+  /**
+   * On-demand usage resets the account can still spend, when the plan
+   * reports them -- each clears a capped window without waiting out its
+   * timer.
+   */
+  resetsRemaining?: number
+  /** Every reported window, primary first; one panel row each. */
+  windows?: ReportedWindow[]
   /** Epoch milliseconds this reading was taken. */
   fetchedAt?: number
   /** True when the reading is older than the refresh interval and a retry failed. */
@@ -30,6 +50,21 @@ export interface QuotaState {
   /** Human-readable failure note; present on error, or beside a stale reading. */
   message?: string
 }
+
+/** Windows shorter than a day are the 5-hour-style rolling limit. */
+const DAY_SECONDS = 24 * 3600
+
+/**
+ * Fold one upstream window into the shape the panel renders.
+ *
+ * @param window - a window as the usage endpoint reported it.
+ * @returns the same figures in the panel's vocabulary.
+ */
+const toWindowState = (window: UsageWindow): QuotaWindowState => ({
+  usedPercent: window.used_percent,
+  windowHours: Math.round(window.limit_window_seconds / 3600),
+  ...(window.reset_at === undefined ? {} : { resetAt: window.reset_at }),
+})
 
 /** Construction options. */
 export interface QuotaSourceOptions {
@@ -103,18 +138,18 @@ export class QuotaSource {
     this.#lastAttempt = this.#now()
     try {
       const usage = await fetchUsage(await this.#accessToken(), this.#dispatcher)
-      const window = activeWindow(usage)
+      const reported = reportedWindows(usage)
+      const fiveHour = reported.find((window) => window.limit_window_seconds < DAY_SECONDS)
+      const weekly = reported.find((window) => window.limit_window_seconds >= DAY_SECONDS)
+      const resets = resetsRemaining(usage)
+      const windows = reportWindows(usage)
       this.#state = {
         phase: 'ready',
         ...(usage.plan_type === undefined ? {} : { plan: usage.plan_type }),
-        ...(window === undefined
-          ? {}
-          : {
-              usedPercent: window.used_percent,
-              windowHours: Math.round(window.limit_window_seconds / 3600),
-              ...(window.reset_at === undefined ? {} : { resetAt: window.reset_at }),
-            }),
-        fetchedAt: this.#now(),
+        ...(fiveHour === undefined ? {} : { fiveHour: toWindowState(fiveHour) }),
+        ...(weekly === undefined ? {} : { weekly: toWindowState(weekly) }),
+        ...(resets === undefined ? {} : { resetsRemaining: resets }),
+        ...(windows.length === 0 ? {} : { windows }),
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)

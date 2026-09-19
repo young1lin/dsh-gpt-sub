@@ -59,7 +59,7 @@ export interface TokenStoreOptions {
   authFile: string
   /** Refresh once the access token has less than this many ms of life left. */
   refreshMarginMs: number
-  /** undici Dispatcher (the same ProxyAgent the Forwarder uses, in production). */
+  /** undici Dispatcher (the same ProxyAgent the plugin's routing uses, in production). */
   dispatcher?: unknown
   /** Injectable token-endpoint call, defaulting to undici's fetch. */
   fetchImpl?: RefreshFetch

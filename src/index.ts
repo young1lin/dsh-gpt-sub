@@ -25,6 +25,7 @@ import type {} from '@deepseek-ai/dsh-host-webserver'
 import type { Dispatcher } from 'undici'
 import { readdir, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
+import { randomUUID } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import {
   crossOrigin,
@@ -36,11 +37,12 @@ import {
   type StateOverride,
 } from './proxy-config.ts'
 import { probeProxy } from './proxy-probe.ts'
+import { consumeResetCredit, listResetCredits } from './reset-credits.ts'
 import { installProxyRouting, type ProxyRouting } from './proxy-routing.ts'
 import { QuotaSource } from './quota-route.ts'
 import { TokenStore } from './token-store.ts'
 import type { Config as ConfigShape } from './types.ts'
-import { activeWindow, fetchUsage } from './usage.ts'
+import { fetchUsage, reportedWindows } from './usage.ts'
 
 // A type-only re-export of the same name as the `Config` value below would
 // collide (TS2323); a local alias merges with the value export instead.
@@ -79,6 +81,15 @@ const BROWSE_LIMIT = 500
 
 /** Ceiling on one connectivity probe. */
 const PROBE_TIMEOUT_MS = 15_000
+
+/** Where the browser half lists rate-limit reset credits. */
+const RESET_CREDITS_ROUTE = '/gpt-sub/reset-credits'
+
+/** Where the browser half consumes one rate-limit reset credit. */
+const RESET_CREDITS_CONSUME_ROUTE = '/gpt-sub/reset-credits/consume'
+
+/** Ceiling on one reset-credit upstream call, matching the codex CLI's 10s. */
+const RESET_CREDITS_TIMEOUT_MS = 10_000
 
 /**
  * How a proxy URL appears in logs: credentials masked, direct named as such.
@@ -213,9 +224,17 @@ export async function apply(ctx: Context, config: ConfigShape): Promise<() => Pr
   }
 
   // Fail here, naming the path, rather than leaving the route pointed at a
-  // credential that will never be populated.
-  await tokens.verify()
-  await sync()
+  // credential that will never be populated. A rejected apply() means cordis
+  // never receives the disposer below, so the global routing installed above
+  // has to be undone here too: a failed plugin must not leave the process
+  // dispatching through its still-open proxy agent.
+  try {
+    await tokens.verify()
+    await sync()
+  } catch (error) {
+    await routing?.uninstall()
+    throw error
+  }
   ctx.logger.info('gpt-sub: published Codex access token to %s', config.tokenRef)
 
   // Reachability probe. An unproxied egress answers 403 with a Cloudflare
@@ -228,15 +247,16 @@ export async function apply(ctx: Context, config: ConfigShape): Promise<() => Pr
     // Bounded like the panel's own probe: a black-holed route must delay
     // startup by seconds, not by the operating system's connect timeout.
     const usage = await fetchUsage(current.accessToken, dispatcher, undefined, AbortSignal.timeout(PROBE_TIMEOUT_MS))
-    const window = activeWindow(usage)
-    if (window === undefined) {
+    const windows = reportedWindows(usage)
+    if (windows.length === 0) {
       ctx.logger.info('gpt-sub: reachable; plan %s, no rate-limit window reported', usage.plan_type ?? 'unknown')
     } else {
       ctx.logger.info(
-        'gpt-sub: reachable; plan %s, %d%% of the %dh window used',
+        'gpt-sub: reachable; plan %s, %s',
         usage.plan_type ?? 'unknown',
-        window.used_percent,
-        Math.round(window.limit_window_seconds / 3600),
+        windows
+          .map((window) => window.used_percent + '% of the ' + Math.round(window.limit_window_seconds / 3600) + 'h window')
+          .join(', '),
       )
     }
   } catch (error) {
@@ -561,6 +581,86 @@ export async function apply(ctx: Context, config: ConfigShape): Promise<() => Pr
         },
       }),
     `gpt-sub: GET ${AUTH_BROWSE_ROUTE}`,
+  )
+
+  ctx.effect(
+    () =>
+      ctx.webServer.register({
+        kind: 'exact',
+        path: RESET_CREDITS_ROUTE,
+        handler: async (request, response) => {
+          if (request.method !== 'GET') {
+            replyJson(response, 405, { ok: false, message: 'method not allowed' })
+            return
+          }
+          try {
+            const accessToken = (await tokens.getTokens()).accessToken
+            const details = await listResetCredits(
+              accessToken,
+              dispatcher,
+              undefined,
+              AbortSignal.timeout(RESET_CREDITS_TIMEOUT_MS),
+            )
+            replyJson(response, 200, { ok: true, ...details })
+          } catch (error) {
+            replyJson(response, 200, { ok: false, message: error instanceof Error ? error.message : String(error) })
+          }
+        },
+      }),
+    `gpt-sub: GET ${RESET_CREDITS_ROUTE}`,
+  )
+
+  // Redeeming is destructive and idempotent only per key, so the host mints a
+  // fresh key per click; the page sends the credit id it means to spend.
+  ctx.effect(
+    () =>
+      ctx.webServer.register({
+        kind: 'exact',
+        path: RESET_CREDITS_CONSUME_ROUTE,
+        handler: async (request, response) => {
+          if (request.method !== 'POST') {
+            replyJson(response, 405, { ok: false, message: 'method not allowed' })
+            return
+          }
+          if (crossOrigin(request)) {
+            replyJson(response, 403, { ok: false, message: 'cross-origin request refused' })
+            return
+          }
+          let creditId: string | undefined
+          try {
+            const body = await readJsonObject(request)
+            const value = body['creditId']
+            if (value === undefined || value === null) creditId = undefined
+            else if (typeof value !== 'string' || value.trim() === '') {
+              throw new Error('creditId must be a non-empty string when present')
+            } else creditId = value.trim()
+          } catch (error) {
+            replyJson(response, 400, { ok: false, message: error instanceof Error ? error.message : String(error) })
+            return
+          }
+          try {
+            const accessToken = (await tokens.getTokens()).accessToken
+            const result = await consumeResetCredit(accessToken, randomUUID(), {
+              ...(creditId === undefined ? {} : { creditId }),
+              ...(dispatcher === undefined ? {} : { dispatcher }),
+              signal: AbortSignal.timeout(RESET_CREDITS_TIMEOUT_MS),
+            })
+            ctx.logger.info(
+              'gpt-sub: rate-limit reset credit consumed (code=%s, windows_reset=%d, credit=%s)',
+              result.code,
+              result.windows_reset ?? 0,
+              creditId ?? 'any',
+            )
+            // The window just changed, so serve the next quota poll from a
+            // fresh upstream read instead of the throttle's cache.
+            await quota.read(true).catch(() => undefined)
+            replyJson(response, 200, { ok: true, ...result })
+          } catch (error) {
+            replyJson(response, 500, { ok: false, message: error instanceof Error ? error.message : String(error) })
+          }
+        },
+      }),
+    `gpt-sub: POST ${RESET_CREDITS_CONSUME_ROUTE}`,
   )
 
   const timer = setInterval(() => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { activeWindow, fetchUsage, UsageError, type Usage } from '../src/usage.ts'
+import { fetchUsage, reportedWindows, resetsRemaining, reportWindows, UsageError, type Usage } from '../src/usage.ts'
 
 /** A fetch double answering one canned reply. */
 function reply(status: number, body: string): typeof globalThis.fetch {
@@ -39,26 +39,71 @@ describe('fetchUsage', () => {
   })
 })
 
-describe('activeWindow', () => {
-  it('prefers the secondary window when the account has one', () => {
+describe('reportedWindows', () => {
+  it('lists both windows, primary first, when the plan has a 5h and a weekly one', () => {
     const usage: Usage = {
       rate_limit: {
         primary_window: { used_percent: 10, limit_window_seconds: 18000 },
         secondary_window: { used_percent: 60, limit_window_seconds: 604800 },
       },
     }
-    expect(activeWindow(usage)?.used_percent).toBe(60)
+    expect(reportedWindows(usage).map((window) => window.used_percent)).toEqual([10, 60])
   })
 
-  it('falls back to the primary when secondary is null', () => {
+  it('reports the primary alone when secondary is null', () => {
     // A plus account reports exactly this, so reading only `secondary` shows nothing.
     const usage: Usage = {
       rate_limit: { primary_window: { used_percent: 60, limit_window_seconds: 604800 }, secondary_window: null },
     }
-    expect(activeWindow(usage)?.used_percent).toBe(60)
+    expect(reportedWindows(usage).map((window) => window.used_percent)).toEqual([60])
   })
 
-  it('is undefined when the reply carries no window at all', () => {
-    expect(activeWindow({})).toBeUndefined()
+  it('is empty when the reply carries no window at all', () => {
+    expect(reportedWindows({})).toEqual([])
+  })
+})
+
+describe('resetsRemaining', () => {
+  it('counts the on-demand resets the reply carries', () => {
+    const usage: Usage = { rate_limit_reset_credits: { available_count: 1 } }
+    expect(resetsRemaining(usage)).toBe(1)
+  })
+
+  it('keeps a reported zero, so a spent allowance still reads as one', () => {
+    const usage: Usage = { rate_limit_reset_credits: { available_count: 0 } }
+    expect(resetsRemaining(usage)).toBe(0)
+  })
+
+  it('is undefined when the reply carries no reset credits', () => {
+    expect(resetsRemaining({})).toBeUndefined()
+    expect(resetsRemaining({ rate_limit_reset_credits: null })).toBeUndefined()
+    expect(resetsRemaining({ rate_limit_reset_credits: {} })).toBeUndefined()
+  })
+})
+
+describe('reportWindows', () => {
+  it('lists every reported window, primary first, with hours and reset time', () => {
+    const usage: Usage = {
+      rate_limit: {
+        primary_window: { used_percent: 11, limit_window_seconds: 18000, reset_at: 1234 },
+        secondary_window: { used_percent: 2, limit_window_seconds: 604800 },
+      },
+    }
+    expect(reportWindows(usage)).toEqual([
+      { usedPercent: 11, windowHours: 5, resetAt: 1234 },
+      { usedPercent: 2, windowHours: 168 },
+    ])
+  })
+
+  it('skips a null secondary window', () => {
+    // A plus account reports exactly this: one window, on the primary slot.
+    const usage: Usage = {
+      rate_limit: { primary_window: { used_percent: 60, limit_window_seconds: 604800 }, secondary_window: null },
+    }
+    expect(reportWindows(usage)).toEqual([{ usedPercent: 60, windowHours: 168 }])
+  })
+
+  it('is empty when the reply carries no window at all', () => {
+    expect(reportWindows({})).toEqual([])
   })
 })

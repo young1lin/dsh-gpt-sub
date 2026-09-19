@@ -1,16 +1,44 @@
-# dsh-gpt-sub bundle patch: one insert over the profile root. Later user patch
-# layers address this row by id and replace its whole config.
+# dsh-gpt-sub bundle patch, two rows over the profile root.
+#
+# Row 1 (insert): the plugin itself -- token sync, host-scoped proxy routing,
+# and the quota panel. Later user patch layers address this row by id and
+# replace its whole config.
+#
+# Row 2 (edit, no insert:): seeds the llm-pi-ai route that turns the token
+# this plugin publishes into selectable models with zero user configuration.
+# It edits the dormant llm-pi-ai row @deepseek-ai/dsh-base inserts, so that
+# bundle must come earlier in dsh.profile.bundles; a missing row is warned
+# and skipped by the loader, not an error. A user `llm-pi-ai:` settings
+# section merges per provider on top of this, so providers declared there are
+# additive and field edits win.
 - insert:
     - id: gpt-sub
       name: 'dsh-gpt-sub'
       config:
-        # Proxy for reaching the OAuth token endpoint. Empty means direct.
+        # Proxy for reaching the Codex hosts. Empty means direct.
         proxyUrl: 'http://127.0.0.1:7890'
         # Codex CLI credential file, shared with the codex command.
         authFile: '~/.codex/auth.json'
         # Refresh the access token when less than this many minutes remain.
         refreshMarginMinutes: 30
-        # Credential the openai-codex provider route reads in settings.yaml.
+        # Credential the seeded openai-codex route reads as its api-key auth.
+        # Must match the apiKeyEnv in the llm-pi-ai row below; the regression
+        # test in tests/cordis-patch.spec.ts holds them together.
         tokenRef: 'CODEX_NATIVE_TOKEN'
         # How often to re-read auth.json and republish the token.
         syncIntervalMinutes: 10
+# Edit row against the dsh-base row: a patch replaces the whole config block,
+# and dsh-base ships the row with no config, so this only adds the route.
+- id: llm-pi-ai
+  name: '@deepseek-ai/dsh-llm-pi-ai'
+  config:
+    providers:
+      openai-codex:
+        # The live Codex access token dsh-gpt-sub republishes. Naming it
+        # grafts an api-key method beside the catalog provider's OAuth one --
+        # exactly the seam the plugin fills.
+        apiKeyEnv: 'CODEX_NATIVE_TOKEN'
+        displayName: 'Codex Subscription'
+        # models omitted on purpose: the installed pi-ai catalog serves
+        # gpt-5.6-sol/terra/luna unchanged -- context windows, input
+        # modalities, and thinking levels (minimal -> low, xhigh, max).

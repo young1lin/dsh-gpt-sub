@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { getGlobalDispatcher, setGlobalDispatcher } from 'undici'
 import * as gptSub from '../src/index.ts'
 
 // apply() builds its ProxyAgent internally, so the real instance is
@@ -46,12 +47,15 @@ let dir: string
 let authFile: string
 let stateFile: string
 const started: { fiber: { dispose: () => Promise<void> } }[] = []
+/** The dispatcher in force before each test; restored after, so a leak in one test cannot poison the next. */
+let baselineDispatcher: ReturnType<typeof getGlobalDispatcher>
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), 'gpt-sub-lifecycle-'))
   authFile = join(dir, 'auth.json')
   stateFile = join(dir, 'state.json')
   await writeAuth()
+  baselineDispatcher = getGlobalDispatcher()
   proxyAgent.built.length = 0
   proxyAgent.closed = 0
   proxyAgent.failClose = false
@@ -59,6 +63,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   for (const entry of started.splice(0)) await entry.fiber.dispose()
+  setGlobalDispatcher(baselineDispatcher)
   await rm(dir, { recursive: true, force: true })
 })
 
@@ -434,6 +439,22 @@ describe('plugin lifecycle', () => {
     await expect(fiber.await()).rejects.toThrow(authFile)
     // Nothing may be published when the credential file cannot be read.
     expect(creds.writes).toHaveLength(0)
+  })
+
+  it('restores the global dispatcher and closes the agent when start fails', async () => {
+    // When apply() rejects, cordis never receives the disposer, so the cleanup
+    // has to happen on the failure path itself: a failed plugin must not leave
+    // the process-wide dispatcher routing through its still-open proxy agent.
+    await rm(authFile)
+    const creds = credentials()
+    const { ctx } = contextWith(creds)
+    const fiber = ctx.plugin(gptSub, config({ proxyUrl: PROXY_URL }))
+    started.push({ fiber })
+
+    await expect(fiber.await()).rejects.toThrow(authFile)
+    expect(getGlobalDispatcher()).toBe(baselineDispatcher)
+    expect(proxyAgent.built).toEqual([PROXY_URL])
+    expect(proxyAgent.closed).toBe(1)
   })
 
   it('closes the proxy dispatcher when the fiber is disposed', async () => {
