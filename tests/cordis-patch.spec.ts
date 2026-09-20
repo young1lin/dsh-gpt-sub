@@ -15,7 +15,7 @@ const patch = await readFile(join(import.meta.dirname, '..', 'cordis.patch.yml')
 describe('cordis.patch.yml', () => {
   it('inserts the gpt-sub row with its documented config defaults', () => {
     expect(patch).toContain("- id: gpt-sub")
-    expect(patch).toContain("name: 'dsh-gpt-sub'")
+    expect(patch).toContain("name: '@young1lin/dsh-gpt-sub'")
     expect(patch).toContain("proxyUrl: 'http://127.0.0.1:7890'")
     expect(patch).toContain("authFile: '~/.codex/auth.json'")
     expect(patch).toContain("tokenRef: 'CODEX_NATIVE_TOKEN'")

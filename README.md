@@ -2,6 +2,8 @@
 
 Direct ChatGPT/Codex subscription access for DeepSeek Harness (DSH).
 
+Published on npm as **`@young1lin/dsh-gpt-sub`** (public, MIT).
+
 This plugin owns no transport. pi-ai already ships an `openai-codex` provider
 that speaks the Codex wire format — it sets `store`, derives
 `chatgpt-account-id` from the access token's own JWT claim, and speaks the
@@ -33,18 +35,32 @@ observes a partial file.
 
 ### 1. Mount the bundle
 
-It is a profile bundle. Link it into the profile and list it in `dsh.profile.bundles`:
+**Option A — install from npm (recommended).** `dsh plugin` installs the package
+into the profile and mounts the bundled `cordis.patch.yml` automatically — no
+manual yml editing:
+
+```powershell
+# Prereqs: Node ≥ 20, dsh ≥ 0.1.1-rc.1 (ships the `dsh plugin` command),
+# pnpm on PATH (corepack enable or npm i -g pnpm)
+dsh plugin --profile web add @young1lin/dsh-gpt-sub
+dsh web    # restart the host (the host half is module code)
+```
+
+Remove it again with `dsh plugin --profile web remove @young1lin/dsh-gpt-sub`.
+
+**Option B — link a checkout (development).** It is a profile bundle. Link it
+into the profile and list it in `dsh.profile.bundles`:
 
 ```jsonc
 // ~/.dsh/profiles/web/package.json
 {
   "dsh": {
     "profile": {
-      "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "dsh-gpt-sub"]
+      "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "@young1lin/dsh-gpt-sub"]
     }
   },
   "dependencies": {
-    "dsh-gpt-sub": "link:D:/dev/dsh-gpt-sub"
+    "@young1lin/dsh-gpt-sub": "link:<path-to-your-checkout>"
   }
 }
 ```

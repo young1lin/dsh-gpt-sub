@@ -13,7 +13,7 @@
 # additive and field edits win.
 - insert:
     - id: gpt-sub
-      name: 'dsh-gpt-sub'
+      name: '@young1lin/dsh-gpt-sub'
       config:
         # Proxy for reaching the Codex hosts. Empty means direct.
         proxyUrl: 'http://127.0.0.1:7890'

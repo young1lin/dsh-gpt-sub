@@ -15,7 +15,7 @@
  */
 
 window.__ModuleLoader__.load({
-  id: 'dsh-gpt-sub',
+  id: '@young1lin/dsh-gpt-sub',
   factory: (require) => {
     var module = { exports: {} }
     var exports = module.exports

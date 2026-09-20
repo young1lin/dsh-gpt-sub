@@ -1,0 +1,60 @@
+# CI for the built dual-face plugin: install with pnpm (frozen lockfile), build
+# lib/ (gitignored build output shipped in the tarball), typecheck, run the
+# vitest suite, and check the npm tarball manifest. lib/ never enters git, so
+# every pipeline that later publishes must prove it can build first.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: [20, 22, 24]
+    steps:
+      - uses: actions/checkout@v4
+
+      # Reads the pinned version from the packageManager field.
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+
+      - name: Install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+
+      - name: Build (tsc -> lib/)
+        run: pnpm build
+
+      - name: Typecheck (src + tests)
+        run: pnpm typecheck
+
+      - name: Test (vitest)
+        run: pnpm test
+
+      - name: Pack (tarball manifest check)
+        run: npm pack --dry-run
+
+      # Guard against any contributor path or machine name landing in the
+      # shipped sources (files ships lib/, src/, client.js, and docs-free
+      # extras, but this check is cheap and permanent).
+      - name: Scan sources for machine paths
+        shell: bash
+        run: |
+          if grep -rInE --include='*.js' --include='*.mjs' --include='*.ts' '/home/runner|/Users/[A-Za-z]|/root/|[A-Za-z]:\\Users' . --exclude-dir=node_modules; then
+            echo "::error::machine path leaked into sources (matches above)"
+            exit 1
+          fi
+          echo "sources clean: no machine paths"
