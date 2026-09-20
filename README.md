@@ -40,7 +40,7 @@ into the profile and mounts the bundled `cordis.patch.yml` automatically — no
 manual yml editing:
 
 ```powershell
-# Prereqs: Node ≥ 20, dsh ≥ 0.1.1-rc.1 (ships the `dsh plugin` command),
+# Prereqs: Node ≥ 22.13 (the pnpm-managed toolchain needs 22.13+), dsh ≥ 0.1.1-rc.1 (ships the `dsh plugin` command),
 # pnpm on PATH (corepack enable or npm i -g pnpm)
 dsh plugin --profile web add @young1lin/dsh-gpt-sub
 dsh web    # restart the host (the host half is module code)
