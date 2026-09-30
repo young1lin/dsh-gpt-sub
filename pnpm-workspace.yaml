@@ -1,2 +1,7 @@
 allowBuilds:
   esbuild: true
+minimumReleaseAgeExclude:
+  - '@deepseek-ai/dsh-brand@0.2.0-rc.2'
+  - '@deepseek-ai/dsh-credentials@0.2.0-rc.2'
+  - '@deepseek-ai/dsh-host-webserver@0.2.0-rc.2'
+  - '@deepseek-ai/dsh-invariants@0.2.0-rc.2'

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { Config, inject, name } from '../src/index.ts'
+import type { Config as ConfigShape } from '../src/types.ts'
 
 describe('plugin config', () => {
   it('is named gpt-sub', () => {
@@ -21,7 +22,30 @@ describe('plugin config', () => {
   })
 
   it('resolves from an empty document, so every field is optional', () => {
-    expect(new Config({}).proxyUrl).toBe('')
+    const defaults: ConfigShape = {
+      proxyUrl: '',
+      authFile: '~/.codex/auth.json',
+      refreshMarginMinutes: 30,
+      tokenRef: 'CODEX_NATIVE_TOKEN',
+      syncIntervalMinutes: 10,
+      bootstrapRetries: 3,
+      stateFile: '~/.dsh/gpt-sub.json',
+    }
+    expect(new Config({})).toEqual(defaults)
+  })
+
+  it('preserves explicit values for every config field on the current Schema', () => {
+    const input: ConfigShape = {
+      proxyUrl: 'http://127.0.0.1:7890',
+      authFile: './test-auth.json',
+      refreshMarginMinutes: 5,
+      tokenRef: 'TEST_REF',
+      syncIntervalMinutes: 1,
+      bootstrapRetries: 0,
+      stateFile: './test-state.json',
+    }
+    const resolved: ConfigShape = new Config(input)
+    expect(resolved).toEqual(input)
   })
 
   it('keeps an explicit token reference', () => {

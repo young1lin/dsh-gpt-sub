@@ -126,7 +126,7 @@ export const Config: z<Partial<ConfigShape>, ConfigShape> = z.object({
   // exists, its proxyUrl wins over the config's -- a page edit survives
   // restarts without touching cordis config layers.
   stateFile: z.string().default('~/.dsh/gpt-sub.json'),
-})
+}) as z<Partial<ConfigShape>, ConfigShape>
 
 /** Expand a leading `~` against the current user's home directory. */
 function expandHome(path: string): string {
